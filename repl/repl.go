@@ -20,7 +20,6 @@ import (
 	"os/signal"
 
 	"github.com/chzyer/readline"
-	"go.starlark.net/resolve"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
 )
@@ -33,8 +32,10 @@ var interrupted = make(chan os.Signal, 1)
 // variable named "context" to a context.Context that is cancelled by a
 // SIGINT (Control-C). Client-supplied global functions may use this
 // context to make long-running operations interruptable.
-//
 func REPL(thread *starlark.Thread, globals starlark.StringDict) {
+	REPLOptions(syntax.LegacyFileOptions(), thread, globals)
+}
+func REPLOptions(opts *syntax.FileOptions, thread *starlark.Thread, globals starlark.StringDict) {
 	signal.Notify(interrupted, os.Interrupt)
 	defer signal.Stop(interrupted)
 
@@ -45,7 +46,7 @@ func REPL(thread *starlark.Thread, globals starlark.StringDict) {
 	}
 	defer rl.Close()
 	for {
-		if err := rep(rl, thread, globals); err != nil {
+		if err := rep(opts, rl, thread, globals); err != nil {
 			if err == readline.ErrInterrupt {
 				fmt.Println(err)
 				continue
@@ -59,7 +60,7 @@ func REPL(thread *starlark.Thread, globals starlark.StringDict) {
 //
 // It returns an error (possibly readline.ErrInterrupt)
 // only if readline failed. Starlark errors are printed.
-func rep(rl *readline.Instance, thread *starlark.Thread, globals starlark.StringDict) error {
+func rep(opts *syntax.FileOptions, rl *readline.Instance, thread *starlark.Thread, globals starlark.StringDict) error {
 	// Each item gets its own context,
 	// which is cancelled by a SIGINT.
 	//
@@ -93,8 +94,14 @@ func rep(rl *readline.Instance, thread *starlark.Thread, globals starlark.String
 		return []byte(line + "\n"), nil
 	}
 
+	// Treat load bindings as global (like they used to be) in the REPL.
+	// Fixes github.com/google/starlark-go/issues/224.
+	opts2 := *opts
+	opts2.LoadBindsGlobally = true
+	opts = &opts2
+
 	// parse
-	f, err := syntax.ParseCompoundStmt("<stdin>", readline)
+	f, err := opts.ParseCompoundStmt("<stdin>", readline)
 	if err != nil {
 		if eof {
 			return io.EOF
@@ -103,16 +110,9 @@ func rep(rl *readline.Instance, thread *starlark.Thread, globals starlark.String
 		return nil
 	}
 
-	// Treat load bindings as global (like they used to be) in the REPL.
-	// This is a workaround for github.com/google/starlark-go/issues/224.
-	// TODO(adonovan): not safe wrt concurrent interpreters.
-	// Come up with a more principled solution (or plumb options everywhere).
-	defer func(prev bool) { resolve.LoadBindsGlobally = prev }(resolve.LoadBindsGlobally)
-	resolve.LoadBindsGlobally = true
-
 	if expr := soleExpr(f); expr != nil {
 		// eval
-		v, err := starlark.EvalExpr(thread, expr, globals)
+		v, err := starlark.EvalExprOptions(f.Options, thread, expr, globals)
 		if err != nil {
 			PrintError(err)
 			return nil
@@ -153,6 +153,9 @@ func PrintError(err error) {
 // suitable for use in the REPL.
 // Each function returned by MakeLoad accesses a distinct private cache.
 func MakeLoad() func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
+	return MakeLoadOptions(syntax.LegacyFileOptions())
+}
+func MakeLoadOptions(opts *syntax.FileOptions) func(thread *starlark.Thread, module string) (starlark.StringDict, error) {
 	type entry struct {
 		globals starlark.StringDict
 		err     error
@@ -173,7 +176,7 @@ func MakeLoad() func(thread *starlark.Thread, module string) (starlark.StringDic
 
 			// Load it.
 			thread := &starlark.Thread{Name: "exec " + module, Load: thread.Load}
-			globals, err := starlark.ExecFile(thread, module, nil, nil)
+			globals, err := starlark.ExecFileOptions(opts, thread, module, nil, nil)
 			e = &entry{globals, err}
 
 			// Update the cache.

@@ -343,8 +343,11 @@ func (prog *Program) Write(out io.Writer) error {
 // If ExecFile fails during evaluation, it returns an *EvalError
 // containing a backtrace.
 func ExecFile(thread *Thread, filename string, src interface{}, predeclared StringDict) (StringDict, error) {
+	return ExecFileOptions(syntax.LegacyFileOptions(), thread, filename, src, predeclared)
+}
+func ExecFileOptions(opts *syntax.FileOptions, thread *Thread, filename string, src interface{}, predeclared StringDict) (StringDict, error) {
 	// Parse, resolve, and compile a Starlark source file.
-	_, mod, err := SourceProgram(filename, src, predeclared.Has)
+	_, mod, err := SourceProgramOptions(opts, filename, src, predeclared.Has)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +367,10 @@ func ExecFile(thread *Thread, filename string, src interface{}, predeclared Stri
 // Its typical value is predeclared.Has,
 // where predeclared is a StringDict of pre-declared values.
 func SourceProgram(filename string, src interface{}, isPredeclared func(string) bool) (*syntax.File, *Program, error) {
-	f, err := syntax.Parse(filename, src, 0)
+	return SourceProgramOptions(syntax.LegacyFileOptions(), filename, src, isPredeclared)
+}
+func SourceProgramOptions(opts *syntax.FileOptions, filename string, src interface{}, isPredeclared func(string) bool) (*syntax.File, *Program, error) {
+	f, err := opts.Parse(filename, src, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -396,7 +402,7 @@ func FileProgram(f *syntax.File, isPredeclared func(string) bool) (*Program, err
 	}
 
 	module := f.Module.(*resolve.Module)
-	compiled := compile.File(f.Stmts, pos, "<toplevel>", module.Locals, module.Globals)
+	compiled := compile.File(f.Options, f.Stmts, pos, "<toplevel>", module.Locals, module.Globals)
 
 	return &Program{compiled}, nil
 }
@@ -453,7 +459,7 @@ func ExecREPLChunk(f *syntax.File, thread *Thread, globals StringDict) error {
 	}
 
 	module := f.Module.(*resolve.Module)
-	compiled := compile.File(f.Stmts, pos, "<toplevel>", module.Locals, module.Globals)
+	compiled := compile.File(f.Options, f.Stmts, pos, "<toplevel>", module.Locals, module.Globals)
 	prog := &Program{compiled}
 
 	// -- variant of Program.Init --
@@ -523,11 +529,14 @@ func makeToplevelFunction(prog *compile.Program, predeclared StringDict) *Functi
 // If Eval fails during evaluation, it returns an *EvalError
 // containing a backtrace.
 func Eval(thread *Thread, filename string, src interface{}, env StringDict) (Value, error) {
-	expr, err := syntax.ParseExpr(filename, src, 0)
+	return EvalOptions(syntax.LegacyFileOptions(), thread, filename, src, env)
+}
+func EvalOptions(opts *syntax.FileOptions, thread *Thread, filename string, src interface{}, env StringDict) (Value, error) {
+	expr, err := opts.ParseExpr(filename, src, 0)
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeExprFunc(expr, env)
+	f, err := makeExprFunc(opts, expr, env)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +556,10 @@ func Eval(thread *Thread, filename string, src interface{}, env StringDict) (Val
 // If Eval fails during evaluation, it returns an *EvalError
 // containing a backtrace.
 func EvalExpr(thread *Thread, expr syntax.Expr, env StringDict) (Value, error) {
-	fn, err := makeExprFunc(expr, env)
+	return EvalExprOptions(syntax.LegacyFileOptions(), thread, expr, env)
+}
+func EvalExprOptions(opts *syntax.FileOptions, thread *Thread, expr syntax.Expr, env StringDict) (Value, error) {
+	fn, err := makeExprFunc(opts, expr, env)
 	if err != nil {
 		return nil, err
 	}
@@ -557,21 +569,25 @@ func EvalExpr(thread *Thread, expr syntax.Expr, env StringDict) (Value, error) {
 // ExprFunc returns a no-argument function
 // that evaluates the expression whose source is src.
 func ExprFunc(filename string, src interface{}, env StringDict) (*Function, error) {
-	expr, err := syntax.ParseExpr(filename, src, 0)
+	return ExprFuncOptions(syntax.LegacyFileOptions(), filename, src, env)
+}
+func ExprFuncOptions(options *syntax.FileOptions, filename string, src interface{}, env StringDict) (*Function, error) {
+	expr, err := options.ParseExpr(filename, src, 0)
 	if err != nil {
 		return nil, err
 	}
-	return makeExprFunc(expr, env)
+	return makeExprFunc(options, expr, env)
 }
 
 // makeExprFunc returns a no-argument function whose body is expr.
-func makeExprFunc(expr syntax.Expr, env StringDict) (*Function, error) {
-	locals, err := resolve.Expr(expr, env.Has, Universe.Has)
+// The options must be consistent with those used when parsing expr.
+func makeExprFunc(opts *syntax.FileOptions, expr syntax.Expr, env StringDict) (*Function, error) {
+	locals, err := resolve.ExprOptions(opts, expr, env.Has, Universe.Has)
 	if err != nil {
 		return nil, err
 	}
 
-	return makeToplevelFunction(compile.Expr(expr, "<expr>", locals), env), nil
+	return makeToplevelFunction(compile.Expr(opts, expr, "<expr>", locals), env), nil
 }
 
 // The following functions are primitive operations of the byte code interpreter.

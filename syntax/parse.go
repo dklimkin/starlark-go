@@ -25,17 +25,20 @@ const (
 
 // Parse parses the input data and returns the corresponding parse tree.
 //
-// If src != nil, ParseFile parses the source from src and the filename
+// If src != nil, Parse parses the source from src and the filename
 // is only used when recording position information.
 // The type of the argument for the src parameter must be string,
 // []byte, io.Reader, or FilePortion.
-// If src == nil, ParseFile parses the file specified by filename.
+// If src == nil, Parse parses the file specified by filename.
 func Parse(filename string, src interface{}, mode Mode) (f *File, err error) {
+	return LegacyFileOptions().Parse(filename, src, mode)
+}
+func (opts *FileOptions) Parse(filename string, src interface{}, mode Mode) (f *File, err error) {
 	in, err := newScanner(filename, src, mode&RetainComments != 0)
 	if err != nil {
 		return nil, err
 	}
-	p := parser{in: in}
+	p := parser{options: opts, in: in}
 	defer p.in.recover(&err)
 
 	p.nextToken() // read first lookahead token
@@ -55,12 +58,15 @@ func Parse(filename string, src interface{}, mode Mode) (f *File, err error) {
 // The parser calls the readline function each
 // time it needs a new line of input.
 func ParseCompoundStmt(filename string, readline func() ([]byte, error)) (f *File, err error) {
+	return LegacyFileOptions().ParseCompoundStmt(filename, readline)
+}
+func (opts *FileOptions) ParseCompoundStmt(filename string, readline func() ([]byte, error)) (f *File, err error) {
 	in, err := newScanner(filename, readline, false)
 	if err != nil {
 		return nil, err
 	}
 
-	p := parser{in: in}
+	p := parser{options: opts, in: in}
 	defer p.in.recover(&err)
 
 	p.nextToken() // read first lookahead token
@@ -79,18 +85,21 @@ func ParseCompoundStmt(filename string, readline func() ([]byte, error)) (f *Fil
 		}
 	}
 
-	return &File{Path: filename, Stmts: stmts}, nil
+	return &File{Options: opts, Path: filename, Stmts: stmts}, nil
 }
 
 // ParseExpr parses a Starlark expression.
 // A comma-separated list of expressions is parsed as a tuple.
 // See Parse for explanation of parameters.
 func ParseExpr(filename string, src interface{}, mode Mode) (expr Expr, err error) {
+	return LegacyFileOptions().ParseExpr(filename, src, mode)
+}
+func (opts *FileOptions) ParseExpr(filename string, src interface{}, mode Mode) (expr Expr, err error) {
 	in, err := newScanner(filename, src, mode&RetainComments != 0)
 	if err != nil {
 		return nil, err
 	}
-	p := parser{in: in}
+	p := parser{options: opts, in: in}
 	defer p.in.recover(&err)
 
 	p.nextToken() // read first lookahead token
@@ -112,9 +121,10 @@ func ParseExpr(filename string, src interface{}, mode Mode) (expr Expr, err erro
 }
 
 type parser struct {
-	in     *scanner
-	tok    Token
-	tokval tokenValue
+	options *FileOptions
+	in      *scanner
+	tok     Token
+	tokval  tokenValue
 }
 
 // nextToken advances the scanner and returns the position of the
@@ -139,7 +149,7 @@ func (p *parser) parseFile() *File {
 		}
 		stmts = p.parseStmt(stmts)
 	}
-	return &File{Stmts: stmts}
+	return &File{Options: p.options, Stmts: stmts}
 }
 
 func (p *parser) parseStmt(stmts []Stmt) []Stmt {
@@ -275,10 +285,11 @@ func (p *parser) parseSimpleStmt(stmts []Stmt, consumeNL bool) []Stmt {
 }
 
 // small_stmt = RETURN expr?
-//            | PASS | BREAK | CONTINUE
-//            | LOAD ...
-//            | expr ('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expr   // assign
-//            | expr
+//
+//	| PASS | BREAK | CONTINUE
+//	| LOAD ...
+//	| expr ('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expr   // assign
+//	| expr
 func (p *parser) parseSmallStmt() Stmt {
 	switch p.tok {
 	case RETURN:
@@ -415,21 +426,23 @@ func (p *parser) consume(t Token) Position {
 }
 
 // params = (param COMMA)* param COMMA?
-//        |
+//
+//	|
 //
 // param = IDENT
-//       | IDENT EQ test
-//       | STAR
-//       | STAR IDENT
-//       | STARSTAR IDENT
+//
+//	| IDENT EQ test
+//	| STAR
+//	| STAR IDENT
+//	| STARSTAR IDENT
 //
 // parseParams parses a parameter list.  The resulting expressions are of the form:
 //
-//      *Ident                                          x
-//      *Binary{Op: EQ, X: *Ident, Y: Expr}             x=y
-//      *Unary{Op: STAR}                                *
-//      *Unary{Op: STAR, X: *Ident}                     *args
-//      *Unary{Op: STARSTAR, X: *Ident}                 **kwargs
+//	*Ident                                          x
+//	*Binary{Op: EQ, X: *Ident, Y: Expr}             x=y
+//	*Unary{Op: STAR}                                *
+//	*Unary{Op: STAR, X: *Ident}                     *args
+//	*Unary{Op: STARSTAR, X: *Ident}                 **kwargs
 func (p *parser) parseParams() []Expr {
 	var params []Expr
 	for p.tok != RPAREN && p.tok != COLON && p.tok != EOF {
@@ -651,9 +664,10 @@ func init() {
 }
 
 // primary_with_suffix = primary
-//                     | primary '.' IDENT
-//                     | primary slice_suffix
-//                     | primary call_suffix
+//
+//	| primary '.' IDENT
+//	| primary slice_suffix
+//	| primary call_suffix
 func (p *parser) parsePrimaryWithSuffix() Expr {
 	x := p.parsePrimary()
 	for {
@@ -770,12 +784,13 @@ func (p *parser) parseArgs() []Expr {
 	return args
 }
 
-//  primary = IDENT
-//          | INT | FLOAT | STRING | BYTES
-//          | '[' ...                    // list literal or comprehension
-//          | '{' ...                    // dict literal or comprehension
-//          | '(' ...                    // tuple or parenthesized expression
-//          | ('-'|'+'|'~') primary_with_suffix
+// primary = IDENT
+//
+//	| INT | FLOAT | STRING | BYTES
+//	| '[' ...                    // list literal or comprehension
+//	| '{' ...                    // dict literal or comprehension
+//	| '(' ...                    // tuple or parenthesized expression
+//	| ('-'|'+'|'~') primary_with_suffix
 func (p *parser) parsePrimary() Expr {
 	switch p.tok {
 	case IDENT:
@@ -836,9 +851,10 @@ func (p *parser) parsePrimary() Expr {
 }
 
 // list = '[' ']'
-//      | '[' expr ']'
-//      | '[' expr expr_list ']'
-//      | '[' expr (FOR loop_variables IN expr)+ ']'
+//
+//	| '[' expr ']'
+//	| '[' expr expr_list ']'
+//	| '[' expr (FOR loop_variables IN expr)+ ']'
 func (p *parser) parseList() Expr {
 	lbrack := p.nextToken()
 	if p.tok == RBRACK {
@@ -865,8 +881,9 @@ func (p *parser) parseList() Expr {
 }
 
 // dict = '{' '}'
-//      | '{' dict_entry_list '}'
-//      | '{' dict_entry FOR loop_variables IN expr '}'
+//
+//	| '{' dict_entry_list '}'
+//	| '{' dict_entry FOR loop_variables IN expr '}'
 func (p *parser) parseDict() Expr {
 	lbrace := p.nextToken()
 	if p.tok == RBRACE {
@@ -904,8 +921,9 @@ func (p *parser) parseDictEntry() *DictEntry {
 }
 
 // comp_suffix = FOR loopvars IN expr comp_suffix
-//             | IF expr comp_suffix
-//             | ']'  or  ')'                              (end)
+//
+//	| IF expr comp_suffix
+//	| ']'  or  ')'                              (end)
 //
 // There can be multiple FOR/IF clauses; the first is always a FOR.
 func (p *parser) parseComprehensionSuffix(lbrace Position, body Expr, endBrace Token) Expr {
